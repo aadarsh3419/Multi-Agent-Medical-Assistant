@@ -9,9 +9,9 @@ import json
 from typing import Dict, List, Optional, Any, Literal, TypedDict, Union, Annotated
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langgraph.graph import MessagesState, StateGraph, END
+from pydantic import BaseModel, Field
 import os, getpass
 from dotenv import load_dotenv
 from agents.rag_agent import MedicalRAG
@@ -28,32 +28,32 @@ from config import Config
 
 load_dotenv()
 
-# Load configuration
+
 config = Config()
 
-# Initialize memory
+
 memory = MemorySaver()
 
-# Specify a thread
+
 thread_config = {"configurable": {"thread_id": "1"}}
 
 
-# Agent that takes the decision of routing the request further to correct task specific agent
+
 class AgentConfig:
     """Configuration settings for the agent decision system."""
-    
-    # Decision model
-    DECISION_MODEL = "gpt-4o"  # or whichever model you prefer
-    
-    # Vision model for image analysis
+
+
+    DECISION_MODEL = "gpt-4o"
+
+
     VISION_MODEL = "gpt-4o"
-    
-    # Confidence threshold for responses
+
+
     CONFIDENCE_THRESHOLD = 0.85
-    
-    # System instructions for the decision agent
-    DECISION_SYSTEM_PROMPT = """You are an intelligent medical triage system that routes user queries to 
-    the appropriate specialized agent. Your job is to analyze the user's request and determine which agent 
+
+
+    DECISION_SYSTEM_PROMPT = """You are an intelligent medical triage system that routes user queries to
+    the appropriate specialized agent. Your job is to analyze the user's request and determine which agent
     is best suited to handle it based on the query content, presence of images, and conversation context.
 
     Available agents:
@@ -84,16 +84,16 @@ class AgentConfig:
 
 class AgentState(MessagesState):
     """State maintained across the workflow."""
-    # messages: List[BaseMessage]  # Conversation history
-    agent_name: Optional[str]  # Current active agent
-    current_input: Optional[Union[str, Dict]]  # Input to be processed
-    has_image: bool  # Whether the current input contains an image
-    image_type: Optional[str]  # Type of medical image if present
-    output: Optional[str]  # Final output to user
-    needs_human_validation: bool  # Whether human validation is required
-    retrieval_confidence: float  # Confidence in retrieval (for RAG agent)
-    bypass_routing: bool  # Flag to bypass agent routing for guardrails
-    insufficient_info: bool  # Flag indicating RAG response has insufficient information
+
+    agent_name: Optional[str]
+    current_input: Optional[Union[str, Dict]]
+    has_image: bool
+    image_type: Optional[str]
+    output: Optional[str]
+    needs_human_validation: bool
+    retrieval_confidence: float
+    bypass_routing: bool
+    insufficient_info: bool
 
 
 class AgentDecision(TypedDict):
@@ -103,46 +103,50 @@ class AgentDecision(TypedDict):
     confidence: float
 
 
+class AgentDecisionSchema(BaseModel):
+    agent: str = Field(description="Name of the agent selected to handle the request")
+    reasoning: str = Field(description="Brief reason for selecting the agent")
+    confidence: float = Field(ge=0, le=1, description="Routing confidence from 0 to 1")
+
+
 def create_agent_graph():
     """Create and configure the LangGraph for agent orchestration."""
 
-    # Initialize guardrails with the same LLM used elsewhere
+
     guardrails = LocalGuardrails(config.rag.llm)
 
-    # LLM
+
     decision_model = config.agent_decision.llm
-    
-    # Initialize the output parser
-    json_parser = JsonOutputParser(pydantic_object=AgentDecision)
-    
-    # Create the decision prompt
+
+
+
     decision_prompt = ChatPromptTemplate.from_messages([
         ("system", AgentConfig.DECISION_SYSTEM_PROMPT),
         ("human", "{input}")
     ])
-    
-    # Create the decision chain
-    decision_chain = decision_prompt | decision_model | json_parser
-    
-    # Define graph state transformations
+
+
+    decision_chain = decision_prompt | decision_model.with_structured_output(AgentDecisionSchema)
+
+
     def analyze_input(state: AgentState) -> AgentState:
         """Analyze the input to detect images and determine input type."""
         current_input = state["current_input"]
         has_image = False
         image_type = None
-        
-        # Get the text from the input
+
+
         input_text = ""
         if isinstance(current_input, str):
             input_text = current_input
         elif isinstance(current_input, dict):
             input_text = current_input.get("text", "")
-        
-        # Check input through guardrails if text is present
+
+
         if input_text:
             is_allowed, message = guardrails.check_input(input_text)
             if not is_allowed:
-                # If input is blocked, return early with guardrail message
+
                 print(f"Selected agent: INPUT GUARDRAILS, Message: ", message)
                 return {
                     **state,
@@ -150,53 +154,53 @@ def create_agent_graph():
                     "agent_name": "INPUT_GUARDRAILS",
                     "has_image": False,
                     "image_type": None,
-                    "bypass_routing": True  # flag to end flow
+                    "bypass_routing": True
                 }
-        
-        # Original image processing code
+
+
         if isinstance(current_input, dict) and "image" in current_input:
             has_image = True
             image_path = current_input.get("image", None)
             image_type_response = AgentConfig.image_analyzer.analyze_image(image_path)
             image_type = image_type_response['image_type']
             print("ANALYZED IMAGE TYPE: ", image_type)
-        
+
         return {
             **state,
             "has_image": has_image,
             "image_type": image_type,
-            "bypass_routing": False  # Explicitly set to False for normal flow
+            "bypass_routing": False
         }
-    
+
     def check_if_bypassing(state: AgentState) -> str:
         """Check if we should bypass normal routing due to guardrails."""
         if state.get("bypass_routing", False):
             return "apply_guardrails"
         return "route_to_agent"
-    
+
     def route_to_agent(state: AgentState) -> Dict:
         """Make decision about which agent should handle the query."""
         messages = state["messages"]
         current_input = state["current_input"]
         has_image = state["has_image"]
         image_type = state["image_type"]
-        
-        # Prepare input for decision model
+
+
         input_text = ""
         if isinstance(current_input, str):
             input_text = current_input
         elif isinstance(current_input, dict):
             input_text = current_input.get("text", "")
-        
-        # Create context from recent conversation history (last 3 messages)
+
+
         recent_context = ""
-        for msg in messages[-6:]:  # Get last 3 exchanges (6 messages)  # Not provided control from config
+        for msg in messages[-6:]:
             if isinstance(msg, HumanMessage):
                 recent_context += f"User: {msg.content}\n"
             elif isinstance(msg, AIMessage):
                 recent_context += f"Assistant: {msg.content}\n"
-        
-        # Combine everything for the decision input
+
+
         decision_input = f"""
         User query: {input_text}
 
@@ -208,26 +212,111 @@ def create_agent_graph():
 
         Based on this information, which agent should handle this query?
         """
-        
-        # Make the decision
-        decision = decision_chain.invoke({"input": decision_input})
 
-        # Decided agent
+        allowed_agents = [
+            "CONVERSATION_AGENT",
+            "RAG_AGENT",
+            "WEB_SEARCH_PROCESSOR_AGENT",
+            "BRAIN_TUMOR_AGENT",
+            "CHEST_XRAY_AGENT",
+            "SKIN_LESION_AGENT",
+        ]
+
+        def parse_structured_decision(raw_output: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(raw_output, AgentDecisionSchema):
+                result = raw_output.model_dump()
+            elif isinstance(raw_output, dict):
+                result = raw_output
+            else:
+                return None
+
+            agent = result.get("agent")
+            reasoning = result.get("reasoning")
+            confidence = result.get("confidence")
+            if not isinstance(agent, str) or not isinstance(reasoning, str):
+                return None
+            matched_agent = next(
+                (name for name in allowed_agents if name.casefold() == agent.casefold()),
+                None,
+            )
+            if (
+                matched_agent is None
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+            ):
+                return None
+            return {
+                "agent": matched_agent,
+                "reasoning": reasoning,
+                "confidence": float(confidence),
+            }
+
+        decision = None
+        for attempt in range(2):
+            try:
+                raw_output = decision_chain.invoke({"input": decision_input})
+                decision = parse_structured_decision(raw_output)
+                if decision is not None:
+                    break
+                print(f"Structured routing returned invalid output: {raw_output!r}")
+            except Exception as exc:
+                print(f"Structured routing failed: {exc!r}")
+
+        if decision is None:
+            plain_text_prompt = (
+                "Reply with exactly one agent name from this list and nothing else: "
+                f"{', '.join(allowed_agents)}\n\n"
+                f"{decision_input}"
+            )
+            try:
+                raw_output = decision_model.invoke(plain_text_prompt)
+                raw_text = getattr(raw_output, "content", raw_output)
+                if isinstance(raw_text, str):
+                    matched_agent = next(
+                        (
+                            name
+                            for name in allowed_agents
+                            if raw_text.strip().casefold() == name.casefold()
+                        ),
+                        None,
+                    )
+                    if matched_agent is not None:
+                        decision = {
+                            "agent": matched_agent,
+                            "reasoning": "Selected using the plain-text routing fallback.",
+                            "confidence": 1.0,
+                        }
+                    else:
+                        print(f"Plain-text routing returned invalid output: {raw_output!r}")
+                else:
+                    print(f"Plain-text routing returned invalid output: {raw_output!r}")
+            except Exception as exc:
+                print(f"Plain-text routing failed: {exc!r}")
+
+        if decision is None:
+            decision = {
+                "agent": "CONVERSATION_AGENT",
+                "reasoning": "Routing failed; using the conversation agent as a fallback.",
+                "confidence": 0.5,
+            }
+
+
         print(f"Decision: {decision['agent']}")
-        
-        # Update state with decision
+
+
         updated_state = {
             **state,
             "agent_name": decision["agent"],
         }
-        
-        # Route based on agent name and confidence
+
+
         if decision["confidence"] < AgentConfig.CONFIDENCE_THRESHOLD:
             return {"agent_state": updated_state, "next": "needs_validation"}
-        
+
         return {"agent_state": updated_state, "next": decision["agent"]}
 
-    # Define agent execution functions (these will be implemented in their respective modules)
+
     def run_conversation_agent(state: AgentState) -> AgentState:
         """Handle general conversation."""
 
@@ -235,25 +324,25 @@ def create_agent_graph():
 
         messages = state["messages"]
         current_input = state["current_input"]
-        
-        # Prepare input for decision model
+
+
         input_text = ""
         if isinstance(current_input, str):
             input_text = current_input
         elif isinstance(current_input, dict):
             input_text = current_input.get("text", "")
-        
-        # Create context from recent conversation history
+
+
         recent_context = ""
-        for msg in messages:#[-20:]:  # Get last 10 exchanges (20 messages)  # currently considering complete history - limit control from config
+        for msg in messages:
             if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
+
                 recent_context += f"User: {msg.content}\n"
             elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
+
                 recent_context += f"Assistant: {msg.content}\n"
-        
-        # Combine everything for the decision input
+
+
         conversation_prompt = f"""User query: {input_text}
 
         Recent conversation context: {recent_context}
@@ -307,160 +396,160 @@ def create_agent_graph():
 
         Conversational LLM Response:"""
 
-        # print("Conversation Prompt:", conversation_prompt)
+
 
         response = config.conversation.llm.invoke(conversation_prompt)
 
-        # print("Conversation respone:", response)
 
-        # response = AIMessage(content="This would be handled by the conversation agent.")
+
+
 
         return {
             **state,
             "output": response,
             "agent_name": "CONVERSATION_AGENT"
         }
-    
+
     def run_rag_agent(state: AgentState) -> AgentState:
         """Handle medical knowledge queries using RAG."""
-        # Initialize the RAG agent
+
 
         print(f"Selected agent: RAG_AGENT")
 
         rag_agent = MedicalRAG(config)
-        
+
         messages = state["messages"]
         query = state["current_input"]
         rag_context_limit = config.rag.context_limit
 
         recent_context = ""
-        for msg in messages[-rag_context_limit:]:# limit controlled from config
+        for msg in messages[-rag_context_limit:]:
             if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
+
                 recent_context += f"User: {msg.content}\n"
             elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
+
                 recent_context += f"Assistant: {msg.content}\n"
 
         response = rag_agent.process_query(query, chat_history=recent_context)
-        retrieval_confidence = response.get("confidence", 0.0)  # Default to 0.0 if not provided
+        retrieval_confidence = response.get("confidence", 0.0)
 
         print(f"Retrieval Confidence: {retrieval_confidence}")
         print(f"Sources: {len(response['sources'])}")
 
-        # Check if response indicates insufficient information
+
         insufficient_info = False
         response_content = response["response"]
-        
-        # Extract the content properly based on type
+
+
         if isinstance(response_content, dict) and hasattr(response_content, 'content'):
-            # If it's an AIMessage or similar object with a content attribute
+
             response_text = response_content.content
         else:
-            # If it's already a string
+
             response_text = response_content
-            
+
         print(f"Response text type: {type(response_text)}")
         print(f"Response text preview: {response_text[:100]}...")
-        
+
         if isinstance(response_text, str) and (
-            "I don't have enough information to answer this question based on the provided context" in response_text or 
-            "I don't have enough information" in response_text or 
+            "I don't have enough information to answer this question based on the provided context" in response_text or
+            "I don't have enough information" in response_text or
             "don't have enough information" in response_text.lower() or
             "not enough information" in response_text.lower() or
             "insufficient information" in response_text.lower() or
             "cannot answer" in response_text.lower() or
             "unable to answer" in response_text.lower()
             ):
-            
+
             print("RAG response indicates insufficient information")
             print(f"Response text that triggered insufficient_info: {response_text[:100]}...")
             insufficient_info = True
 
         print(f"Insufficient info flag set to: {insufficient_info}")
 
-        # Store RAG output ONLY if confidence is high
+
         if retrieval_confidence >= config.rag.min_retrieval_confidence:
-            # response_output = response["response"]
+
             response_output = AIMessage(content=response_text)
         else:
             response_output = AIMessage(content="")
-        
+
         return {
             **state,
             "output": response_output,
-            "needs_human_validation": False,  # Assuming no validation needed for RAG responses
+            "needs_human_validation": False,
             "retrieval_confidence": retrieval_confidence,
             "agent_name": "RAG_AGENT",
             "insufficient_info": insufficient_info
         }
 
-    # Web Search Processor Node
+
     def run_web_search_processor_agent(state: AgentState) -> AgentState:
         """Handles web search results, processes them with LLM, and generates a refined response."""
 
         print(f"Selected agent: WEB_SEARCH_PROCESSOR_AGENT")
         print("[WEB_SEARCH_PROCESSOR_AGENT] Processing Web Search Results...")
-        
+
         messages = state["messages"]
         web_search_context_limit = config.web_search.context_limit
 
         recent_context = ""
-        for msg in messages[-web_search_context_limit:]: # limit controlled from config
+        for msg in messages[-web_search_context_limit:]:
             if isinstance(msg, HumanMessage):
-                # print("######### DEBUG 1:", msg)
+
                 recent_context += f"User: {msg.content}\n"
             elif isinstance(msg, AIMessage):
-                # print("######### DEBUG 2:", msg)
+
                 recent_context += f"Assistant: {msg.content}\n"
 
         web_search_processor = WebSearchProcessorAgent(config)
 
         processed_response = web_search_processor.process_web_search_results(query=state["current_input"], chat_history=recent_context)
 
-        # print("######### DEBUG WEB SEARCH:", processed_response)
-        
+
+
         if state['agent_name'] != None:
             involved_agents = f"{state['agent_name']}, WEB_SEARCH_PROCESSOR_AGENT"
         else:
             involved_agents = "WEB_SEARCH_PROCESSOR_AGENT"
 
-        # Overwrite any previous output with the processed Web Search response
+
         return {
             **state,
-            # "output": "This would be handled by the web search agent, finding the latest information.",
+
             "output": processed_response,
             "agent_name": involved_agents
         }
 
-    # Define Routing Logic
+
     def confidence_based_routing(state: AgentState) -> Dict[str, str]:
         """Route based on RAG confidence score and response content."""
-        # Debug prints
+
         print(f"Routing check - Retrieval confidence: {state.get('retrieval_confidence', 0.0)}")
         print(f"Routing check - Insufficient info flag: {state.get('insufficient_info', False)}")
-        
-        # Redirect if confidence is low or if response indicates insufficient info
-        if (state.get("retrieval_confidence", 0.0) < config.rag.min_retrieval_confidence or 
+
+
+        if (state.get("retrieval_confidence", 0.0) < config.rag.min_retrieval_confidence or
             state.get("insufficient_info", False)):
             print("Re-routed to Web Search Agent due to low confidence or insufficient information...")
-            return "WEB_SEARCH_PROCESSOR_AGENT"  # Correct format
-        return "check_validation"  # No transition needed if confidence is high and info is sufficient
-    
+            return "WEB_SEARCH_PROCESSOR_AGENT"
+        return "check_validation"
+
     def run_brain_tumor_agent(state: AgentState) -> AgentState:
         """Handle brain MRI image analysis."""
 
         print(f"Selected agent: BRAIN_TUMOR_AGENT")
 
-        response = AIMessage(content="This would be handled by the brain tumor agent, analyzing the MRI image.")
+        response = AIMessage(content="Brain tumor module is under development")
 
         return {
             **state,
             "output": response,
-            "needs_human_validation": True,  # Medical diagnosis always needs validation
+            "needs_human_validation": False,
             "agent_name": "BRAIN_TUMOR_AGENT"
         }
-    
+
     def run_chest_xray_agent(state: AgentState) -> AgentState:
         """Handle chest X-ray image analysis."""
 
@@ -469,7 +558,7 @@ def create_agent_graph():
 
         print(f"Selected agent: CHEST_XRAY_AGENT")
 
-        # classify chest x-ray into covid or normal
+
         predicted_class = AgentConfig.image_analyzer.classify_chest_xray(image_path)
 
         if predicted_class == "covid19":
@@ -479,15 +568,15 @@ def create_agent_graph():
         else:
             response = AIMessage(content="The uploaded image is not clear enough to make a diagnosis / the image is not a medical image.")
 
-        # response = AIMessage(content="This would be handled by the chest X-ray agent, analyzing the image.")
+
 
         return {
             **state,
             "output": response,
-            "needs_human_validation": True,  # Medical diagnosis always needs validation
+            "needs_human_validation": True,
             "agent_name": "CHEST_XRAY_AGENT"
         }
-    
+
     def run_skin_lesion_agent(state: AgentState) -> AgentState:
         """Handle skin lesion image analysis."""
 
@@ -496,7 +585,7 @@ def create_agent_graph():
 
         print(f"Selected agent: SKIN_LESION_AGENT")
 
-        # classify chest x-ray into covid or normal
+
         predicted_mask = AgentConfig.image_analyzer.segment_skin_lesion(image_path)
 
         if predicted_mask:
@@ -504,29 +593,29 @@ def create_agent_graph():
         else:
             response = AIMessage(content="The uploaded image is not clear enough to make a diagnosis / the image is not a medical image.")
 
-        # response = AIMessage(content="This would be handled by the skin lesion agent, analyzing the skin image.")
+
 
         return {
             **state,
             "output": response,
-            "needs_human_validation": True,  # Medical diagnosis always needs validation
+            "needs_human_validation": True,
             "agent_name": "SKIN_LESION_AGENT"
         }
-    
+
     def handle_human_validation(state: AgentState) -> Dict:
         """Prepare for human validation if needed."""
         if state.get("needs_human_validation", False):
             return {"agent_state": state, "next": "human_validation", "agent": "HUMAN_VALIDATION"}
         return {"agent_state": state, "next": END}
-    
+
     def perform_human_validation(state: AgentState) -> AgentState:
         """Handle human validation process."""
         print(f"Selected agent: HUMAN_VALIDATION")
 
-        # Append validation request to the existing output
+
         validation_prompt = f"{state['output'].content}\n\n**Human Validation Required:**\n- If you're a healthcare professional: Please validate the output. Select **Yes** or **No**. If No, provide comments.\n- If you're a patient: Simply click Yes to confirm."
 
-        # Create an AI message with the validation prompt
+
         validation_message = AIMessage(content=validation_prompt)
 
         return {
@@ -535,33 +624,33 @@ def create_agent_graph():
             "agent_name": f"{state['agent_name']}, HUMAN_VALIDATION"
         }
 
-    # Check output through guardrails
+
     def apply_output_guardrails(state: AgentState) -> AgentState:
         """Apply output guardrails to the generated response."""
         output = state["output"]
         current_input = state["current_input"]
 
-        # Check if output is valid
+
         if not output or not isinstance(output, (str, AIMessage)):
             return state
 
         output_text = output if isinstance(output, str) else output.content
-        
-        # If the last message was a human validation message
+
+
         if "Human Validation Required" in output_text:
-            # Check if the current input is a human validation response
+
             validation_input = ""
             if isinstance(current_input, str):
                 validation_input = current_input
             elif isinstance(current_input, dict):
                 validation_input = current_input.get("text", "")
-            
-            # If validation input exists
+
+
             if validation_input.lower().startswith(('yes', 'no')):
-                # Add the validation result to the conversation history
+
                 validation_response = HumanMessage(content=f"Validation Result: {validation_input}")
-                
-                # If validation is 'No', modify the output
+
+
                 if validation_input.lower().startswith('no'):
                     fallback_message = AIMessage(content="The previous medical analysis requires further review. A healthcare professional has flagged potential inaccuracies.")
                     return {
@@ -569,37 +658,37 @@ def create_agent_graph():
                         "messages": [validation_response, fallback_message],
                         "output": fallback_message
                     }
-                
+
                 return {
                     **state,
                     "messages": validation_response
                 }
-        
-        # Get the original input text
+
+
         input_text = ""
         if isinstance(current_input, str):
             input_text = current_input
         elif isinstance(current_input, dict):
             input_text = current_input.get("text", "")
-        
-        # Apply output sanitization
+
+
         sanitized_output = guardrails.check_output(output_text, input_text)
-        # sanitized_output = output_text
-        
-        # For non-validation cases, add the sanitized output to messages
+
+
+
         sanitized_message = AIMessage(content=sanitized_output) if isinstance(output, AIMessage) else sanitized_output
-        
+
         return {
             **state,
             "messages": sanitized_message,
             "output": sanitized_message
         }
 
-    
-    # Create the workflow graph
+
+
     workflow = StateGraph(AgentState)
-    
-    # Add nodes for each step
+
+
     workflow.add_node("analyze_input", analyze_input)
     workflow.add_node("route_to_agent", route_to_agent)
     workflow.add_node("CONVERSATION_AGENT", run_conversation_agent)
@@ -611,11 +700,11 @@ def create_agent_graph():
     workflow.add_node("check_validation", handle_human_validation)
     workflow.add_node("human_validation", perform_human_validation)
     workflow.add_node("apply_guardrails", apply_output_guardrails)
-    
-    # Define the edges (workflow connections)
+
+
     workflow.set_entry_point("analyze_input")
-    # workflow.add_edge("analyze_input", "route_to_agent")
-    # Add conditional routing for guardrails bypass
+
+
     workflow.add_conditional_edges(
         "analyze_input",
         check_if_bypassing,
@@ -624,8 +713,8 @@ def create_agent_graph():
             "route_to_agent": "route_to_agent"
         }
     )
-    
-    # Connect decision router to agents
+
+
     workflow.add_conditional_edges(
         "route_to_agent",
         lambda x: x["next"],
@@ -636,13 +725,13 @@ def create_agent_graph():
             "BRAIN_TUMOR_AGENT": "BRAIN_TUMOR_AGENT",
             "CHEST_XRAY_AGENT": "CHEST_XRAY_AGENT",
             "SKIN_LESION_AGENT": "SKIN_LESION_AGENT",
-            "needs_validation": "RAG_AGENT"  # Default to RAG if confidence is low
+            "needs_validation": "RAG_AGENT"
         }
     )
-    
-    # Connect agent outputs to validation check
+
+
     workflow.add_edge("CONVERSATION_AGENT", "check_validation")
-    # workflow.add_edge("RAG_AGENT", "check_validation")
+
     workflow.add_edge("WEB_SEARCH_PROCESSOR_AGENT", "check_validation")
     workflow.add_conditional_edges("RAG_AGENT", confidence_based_routing)
     workflow.add_edge("BRAIN_TUMOR_AGENT", "check_validation")
@@ -651,19 +740,19 @@ def create_agent_graph():
 
     workflow.add_edge("human_validation", "apply_guardrails")
     workflow.add_edge("apply_guardrails", END)
-    
+
     workflow.add_conditional_edges(
         "check_validation",
         lambda x: x["next"],
         {
             "human_validation": "human_validation",
-            END: "apply_guardrails"  # Route to guardrails instead of END
+            END: "apply_guardrails"
         }
     )
-    
-    # workflow.add_edge("human_validation", END)
-    
-    # Compile the graph
+
+
+
+
     return workflow.compile(checkpointer=memory)
 
 
@@ -686,49 +775,49 @@ def init_agent_state() -> AgentState:
 def process_query(query: Union[str, Dict], conversation_history: List[BaseMessage] = None) -> str:
     """
     Process a user query through the agent decision system.
-    
+
     Args:
         query: User input (text string or dict with text and image)
         conversation_history: Optional list of previous messages, NOT NEEDED ANYMORE since the state saves the conversation history now
-        
+
     Returns:
         Response from the appropriate agent
     """
-    # Initialize the graph
+
     graph = create_agent_graph()
 
-    # # Save Graph Flowchart
-    # image_bytes = graph.get_graph().draw_mermaid_png()
-    # decoded = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), -1)
-    # cv2.imwrite("./assets/graph.png", decoded)
-    # print("Graph flowchart saved in assets.")
-    
-    # Initialize state
+
+
+
+
+
+
+
     state = init_agent_state()
-    # if conversation_history:
-    #     state["messages"] = conversation_history
-    
-    # Add the current query
+
+
+
+
     state["current_input"] = query
 
-    # To handle image upload case
+
     if isinstance(query, dict):
         query = query.get("text", "") + ", user uploaded an image for diagnosis."
-    
+
     state["messages"] = [HumanMessage(content=query)]
 
-    # result = graph.invoke(state, thread_config)
-    result = graph.invoke(state, thread_config)
-    # print("######### DEBUG 4:", result)
-    # state["messages"] = [result["messages"][-1].content]
 
-    # Keep history to reasonable size (ANOTHER OPTION: summarize and store before truncating history)
-    if len(result["messages"]) > config.max_conversation_history:  # Keep last config.max_conversation_history messages
+    result = graph.invoke(state, thread_config)
+
+
+
+
+    if len(result["messages"]) > config.max_conversation_history:
         result["messages"] = result["messages"][-config.max_conversation_history:]
 
-    # visualize conversation history in console
+
     for m in result["messages"]:
         m.pretty_print()
-    
-    # Add the response to conversation history
+
+
     return result

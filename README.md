@@ -1,33 +1,20 @@
-<div align="center">
- 
-![logo](https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant/blob/main/assets/logo_rounded.png)
+# MediAssist AI
 
-<h1 align="center"><strong>⚕️ Multi-Agent-Medical-Assistant :<h6 align="center">AI-powered multi-agentic system for medical diagnosis and assistance</h6></strong></h1>
+MediAssist AI is an educational medical-assistance project that brings together conversational health information, retrieval-augmented search, web research, and medical-image analysis in one interface. It is not a substitute for professional medical advice; **this tool is for educational purposes only**.
 
-<!-- ![PyTorch - Version](https://img.shields.io/badge/PYTORCH-2.0+-red?style=for-the-badge&logo=pytorch) -->
-![Python - Version](https://img.shields.io/badge/PYTHON-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)
-![LangGraph - Version](https://img.shields.io/badge/LangGraph-0.3+-teal?style=for-the-badge&logo=langgraph)
-![LangChain - Version](https://img.shields.io/badge/LangChain-0.3+-teal?style=for-the-badge&logo=langchain)
-![Qdrant Client - Version](https://img.shields.io/badge/Qdrant-1.13+-red?style=for-the-badge&logo=qdrant)
-![Pydantic - Version](https://img.shields.io/badge/Pydantic-2.10+-red?style=for-the-badge&logo=pydantic)
-![FastAPI - Version](https://img.shields.io/badge/FastAPI-0.115+-teal?style=for-the-badge&logo=fastapi)
-![Docling - Version](https://img.shields.io/badge/Docling-3.1+-orange?style=for-the-badge&logo=docling)
-[![Generic badge](https://img.shields.io/badge/License-Apache-<COLOR>.svg?style=for-the-badge)](https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant/blob/main/LICENSE) 
-[![GitHub Issues](https://img.shields.io/github/issues/souvikmajumder26/Multi-Agent-Medical-Assistant.svg?style=for-the-badge)](https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant/issues)
-![Contributions welcome](https://img.shields.io/badge/contributions-welcome-orange.svg?style=for-the-badge)
+## My Contributions
 
-</div>
+- Migrated the LLM backend from Azure OpenAI to Google Gemini.
+- Rebranded the interface with MediAssist AI branding and a teal theme.
+- Added a medical disclaimer.
+- Fixed Windows setup and dependency issues.
 
-----
+![MediAssist AI](assets/mediassist-ai-logo.svg)
 
-> [!IMPORTANT]  
-> 📋 Version Updates from v2.0 to v2.1 and further:
-> 1. **Document Processing Upgrade**: Unstructured.io has been replaced with Docling for document parsing and extraction of text, tables, and images to be embedded.
-> 2. **Enhanced RAG References**: Links to source documents and reference images present in reranked retrieved chunks stored in local storage are added to the bottom of the RAG responses.
->
-> To use Unstructured.io based solution, refer release - [v2.0](https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant/tree/v2.0).
- 
+---
+
 ## 📚 Table of Contents
+- [My Contributions](#my-contributions)
 - [Overview](#overview)
 - [Demo](#demo)
 - [Technical Flow Chart](#technical-flowchart)
@@ -46,7 +33,7 @@
 
 ## 📌 Overview <a name="overview"></a>
 
-The **Multi-Agent Medical Assistant** is an **AI-powered chatbot** designed to assist with **medical diagnosis, research, and patient interactions**.  
+MediAssist AI is an **AI-powered educational chatbot** designed to provide medical information, research support, and image analysis tools. It does not provide a diagnosis or replace a qualified healthcare professional.
 
 🚀 **Powered by Multi-Agent Intelligence**, this system integrates:  
 - **🤖 Large Language Models (LLMs)**  
@@ -405,3 +392,7 @@ For any questions or collaboration inquiries, reach out to **Souvik Majumder** o
 </p>
 
 ---
+
+## Original Project Credits
+
+Built on the open-source [Multi-Agent-Medical-Assistant](https://github.com/souvikmajumder26/Multi-Agent-Medical-Assistant) by **Souvik Majumder**, licensed under Apache-2.0. See [LICENSE](LICENSE) for the license text.

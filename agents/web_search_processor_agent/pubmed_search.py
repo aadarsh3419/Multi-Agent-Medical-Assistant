@@ -7,7 +7,7 @@ class PubmedSearchAgent:
     def __init__(self):
         """
         Initialize the Pubmed search agent.
-        
+
         Args:
             query: User query
         """
@@ -21,14 +21,14 @@ class PubmedSearchAgent:
             "retmode": "json",
             "retmax": 5
         }
-        
+
         try:
             response = requests.get(pubmed_api_url, params=params)
             data = response.json()
             article_ids = data.get("esearchresult", {}).get("idlist", [])
             if not article_ids:
                 return "No relevant PubMed articles found."
-            
+
             article_links = [f"https://pubmed.ncbi.nlm.nih.gov/{article_id}/" for article_id in article_ids]
             return "\n".join(article_links)
         except Exception as e:

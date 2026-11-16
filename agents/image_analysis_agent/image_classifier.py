@@ -14,11 +14,11 @@ class ClassificationDecision(TypedDict):
 
 class ImageClassifier:
     """Uses GPT-4o Vision to analyze images and determine their type."""
-    
+
     def __init__(self, vision_model):
         self.vision_model = vision_model
         self.json_parser = JsonOutputParser(pydantic_object=ClassificationDecision)
-        
+
     def local_image_to_data_url(self, image_path: str) -> str:
         """
         Get the url of a local image
@@ -32,7 +32,7 @@ class ImageClassifier:
             base64_encoded_data = base64.b64encode(image_file.read()).decode("utf-8")
 
         return f"data:{mime_type};base64,{base64_encoded_data}"
-    
+
     def classify_image(self, image_path: str) -> str:
         """Analyzes the image to classify it as a medical image and determine it's type."""
         print(f"[ImageAnalyzer] Analyzing image: {image_path}")
@@ -52,19 +52,17 @@ class ImageClassifier:
                     }}
                     """
                 )},
-                {"type": "image_url", "image_url": {"url": self.local_image_to_data_url(image_path)}}  # Correct format
+                {"type": "image_url", "image_url": {"url": self.local_image_to_data_url(image_path)}}
             ]}
         ]
-        
-        # Invoke LLM to classify the image
+
+
         response = self.vision_model.invoke(vision_prompt)
 
         try:
-            # Ensure the response is parsed as JSON
+
             response_json = self.json_parser.parse(response.content)
-            return response_json  # Returns a dictionary instead of a string
+            return response_json
         except json.JSONDecodeError:
             print("[ImageAnalyzer] Warning: Response was not valid JSON.")
             return {"image_type": "unknown", "reasoning": "Invalid JSON response", "confidence": 0.0}
-
-        # return response.content.strip().lower()
